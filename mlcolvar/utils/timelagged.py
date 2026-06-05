@@ -201,6 +201,7 @@ def create_timelagged_dataset(
     tprime: torch.Tensor = None,
     interval: list = None,
     progress_bar: bool = False,
+    walker: torch.Tensor = None,
 ):
     """
     Create a DictDataset of time-lagged configurations.
@@ -215,7 +216,7 @@ def create_timelagged_dataset(
     References
     ----------
     .. [1] Y. I. Yang and M. Parrinello, “Refining collective coordinates and improving free energy
-        representation in variational enhanced sampling,” JCTC 14, 2889–2894 (2018).
+        representation in variational enhanced sampling,” JCTC 14, 2889-2894 (2018).
     .. [2] J. McCarty and M. Parrinello, "A variational conformational dynamics approach to the selection
         of collective variables in meta- dynamics,” JCP 147, 204109 (2017).
     .. [3] H. Wu, et al. "Variational Koopman models: Slow collective variables and molecular kinetics
@@ -239,6 +240,9 @@ def create_timelagged_dataset(
         Range for slicing the returned dataset. Useful to work with batches of same sizes. Recall that with different lag_times one obtains different datasets, with different lengths
     progress_bar: bool
         Display progress bar with tqdm
+    walker : array-like, optional
+        Identifier of the trajectory (walker) to which each configuration belongs.
+        This can only be used when `reweight_mode` is set to `weights_t`. 
 
     Returns
     -------
@@ -278,22 +282,79 @@ def create_timelagged_dataset(
             raise ValueError(
                 f"The length of t ({len(t)}) is different from the one of X ({len(X)}) "
             )
-
+    if walker is not None:
+        if reweight_mode == "rescale_time":
+            raise ValueError(
+                "The `walker` argument is not compatible with `reweight_mode='rescale_time'`."
+            )
+        if len(walker) != len(X):
+            raise ValueError(
+                f"The length of walker ({len(walker)}) is different from the one of X ({len(X)}) "
+            )
+        
     # define tprime if not given:
     if reweight_mode == "rescale_time":
         if tprime is None:
             tprime = tprime_evaluation(t, logweights)
     else:
         tprime = t
+        
+    # =========================
+    # Fast slicing shortcut
+    # =========================
+    if reweight_mode is None or reweight_mode == "weights_t":
+        dt = float(t[1] - t[0]) if len(t) > 1 else 1.0
+        lag_steps = int(round(lag_time / dt))
 
-    # find pairs of configurations separated by lag_time
-    x_t, x_lag, w_t, w_lag = find_timelagged_configurations(
-        X,
-        tprime,
-        lag_time=lag_time,
-        logweights=logweights if reweight_mode == "weights_t" else None,
-        progress_bar=progress_bar,
-    )
+        if lag_steps < 1:
+            raise ValueError("lag_time too small.")
+        if lag_steps >= len(X):
+            raise ValueError("lag_time too large.")
+        
+        # pairs
+        x_t = X[:-lag_steps]
+        x_lag = X[lag_steps:]
+
+        # weights
+        if reweight_mode is None:
+            w_t = torch.ones(len(x_t))
+            w_lag = torch.ones(len(x_lag))
+        else:
+            logweights = torch.tensor(logweights, dtype=torch.float32)
+            weights = torch.exp(logweights)
+            w_t = weights[:-lag_steps]
+            w_lag = weights[lag_steps:]
+
+        # walker
+        if walker is not None:
+            walker = torch.as_tensor(walker)
+            valid = walker[:-lag_steps] == walker[lag_steps:]
+
+            x_t   = x_t[valid]
+            x_lag = x_lag[valid]
+            w_t = w_t[valid]
+            w_lag = w_lag[valid]
+
+    # =========================
+    # Full search mode (rescale_time)
+    # =========================
+    elif reweight_mode == 'rescale_time':
+        x_t, x_lag, w_t, w_lag = find_timelagged_configurations(
+            X,
+            tprime,
+            lag_time=lag_time,
+            logweights=logweights if reweight_mode == "weights_t" else None,
+            progress_bar=progress_bar,
+        )
+
+    # =========================
+    # Invalid mode
+    # =========================
+    else:
+        raise ValueError(
+            f"Unknown reweight_mode '{reweight_mode}'. "
+            "Supported modes are: None, 'weights_t', 'rescale_time'."
+        )
 
     # return only a slice of the data (N. Pedrani)
     if interval is not None:
@@ -316,25 +377,29 @@ def create_timelagged_dataset(
 def test_create_timelagged_dataset():
     in_features = 2
     n_points = 100
+    lag_time = 5
     X = torch.rand(n_points, in_features) * 100
 
     # unbiased case
     t = np.arange(n_points)
-    dataset = create_timelagged_dataset(X, t, lag_time=10)
-    print(len(dataset))
+    dataset = create_timelagged_dataset(X, t, lag_time=lag_time, walker=None)
+    assert len(dataset) == n_points - lag_time
 
     # reweight mode rescale_time (default)
     logweights = np.random.rand(n_points)
-    dataset = create_timelagged_dataset(X, t, logweights=logweights)
-    print(len(dataset))
+    dataset = create_timelagged_dataset(X, t, lag_time=lag_time, logweights=logweights)
+    assert len(dataset) > 0
 
     # reweight mode weights_t
     logweights = np.random.rand(n_points)
     dataset = create_timelagged_dataset(
-        X, t, logweights=logweights, reweight_mode="weights_t"
+        X, t, logweights=logweights, lag_time=lag_time, reweight_mode="weights_t"
     )
-    print(len(dataset))
+    assert len(dataset) == n_points - lag_time
 
-
-if __name__ == "__main__":
-    test_create_timelagged_dataset()
+    # unbiased multi-walker case
+    walker = np.array([0] * (n_points // 2) + [1] * (n_points // 2))
+    dataset = create_timelagged_dataset(
+        X, t, lag_time=lag_time, walker=walker
+    )
+    assert len(dataset) == n_points - 2 * lag_time

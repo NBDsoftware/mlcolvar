@@ -124,3 +124,52 @@ def test_lr_scheduler():
     trainer.fit(model, datamodule)
 
     assert(trainer.optimizers[0].param_groups[0]['lr'] < initial_lr)
+
+
+def test_lr_scheduler_config():
+    # initialize and pass scheduler + config to the model
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau
+    options = {
+        "lr_scheduler": {"scheduler": lr_scheduler, "mode": "min", "patience": 1},
+        "lr_scheduler_config": {"monitor": "valid_loss"},
+    }
+    model = mlcolvar.cvs.RegressionCV(layers=[2, 5, 1], options=options)
+
+    optimizers, schedulers = model.configure_optimizers()
+    assert isinstance(optimizers, list)
+    assert isinstance(schedulers, list)
+    assert schedulers[0]["monitor"] == "valid_loss"
+
+
+def test_basecv_error_and_print(dataset):
+    # Unknown option key in parse_options.
+    with pytest.raises(ValueError):
+        mlcolvar.cvs.RegressionCV(layers=[2, 4, 1], options={"unknown_key": {}})
+
+    model = mlcolvar.cvs.RegressionCV(
+        layers=[N_DESCRIPTORS, 5, 1],
+        preprocessing=torch.nn.Identity(),
+        postprocessing=torch.nn.Identity(),
+    )
+
+    # Forward path with postprocessing branch.
+    output = model(dataset["data"])
+    assert output.shape[0] == len(dataset)
+
+    # test_step delegates to training_step branch.
+    batch = {"data": dataset["data"], "target": dataset["target"]}
+    model.test_step(batch, 0)
+
+    # Invalid optimizer setter branch.
+    with pytest.raises(AttributeError):
+        model.optimizer_name = "OptimizerThatDoesNotExist"
+
+    # Scheduler config errors in configure_optimizers.
+    model.lr_scheduler_kwargs = {"gamma": 0.9}
+    with pytest.raises(ValueError):
+        model.configure_optimizers()
+
+    model.lr_scheduler_kwargs = {"scheduler": torch.optim.lr_scheduler.ExponentialLR, "gamma": 0.99}
+    model.lr_scheduler_config = {"scheduler": "forbidden_override"}
+    with pytest.raises(ValueError):
+        model.configure_optimizers()

@@ -241,6 +241,13 @@ class VariationalAutoEncoderCV(BaseCV, lightning.LightningModule):
                                                           beta = self.beta,
                                                           return_loss_terms = True, 
                                                           **loss_kwargs)
+        loss, reconstruction_loss, kl_loss = self.loss_fn(target = x_ref, 
+                                                          output = x_hat, 
+                                                          mean = mean, 
+                                                          log_variance = log_variance, 
+                                                          beta = self.beta,
+                                                          return_loss_terms = True, 
+                                                          **loss_kwargs)
 
         # Log.
         name = "train" if self.training else "valid"

@@ -55,7 +55,11 @@ class EigsAdjMat(Transform):
         self.PBC = PBC
         self.cell = cell
         self.scaled_coords = scaled_coords
-        self.switching_function = switching_function
+        # Register switching_function as submodule if it's a module, so it moves with the model
+        if switching_function is not None and isinstance(switching_function, torch.nn.Module):
+            self.add_module('switching_function', switching_function)
+        else:
+            self.switching_function = switching_function
 
     def compute_adjacency_matrix(self, pos):
         pos = compute_adjacency_matrix(pos=pos,
@@ -113,6 +117,3 @@ def test_eigs_of_adj_matrix():
     out = model(pos)
     assert(out.shape[-1] == model.out_features)
     out.sum().backward()
-
-if __name__ == "__main__":
-    test_eigs_of_adj_matrix()
